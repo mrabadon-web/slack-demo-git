@@ -60,31 +60,154 @@
     60%      { transform: translateX(-6px); }
     80%      { transform: translateX(6px); }
   }
+  /* Timeout warning toast */
+  #pw-timeout-warn {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    z-index: 10000;
+    background: linear-gradient(135deg, #1c2340, #2d3460);
+    border: 1px solid rgba(245,158,11,0.5);
+    border-radius: 14px;
+    padding: 14px 22px;
+    display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    animation: slideUp 0.3s ease;
+    min-width: 320px;
+  }
+  #pw-timeout-warn.hidden { display: none; }
+  #pw-timeout-warn .warn-icon { font-size: 22px; flex-shrink: 0; }
+  #pw-timeout-warn .warn-text { flex: 1; }
+  #pw-timeout-warn .warn-title {
+    font-size: 13px; font-weight: 800; color: #f59e0b; margin-bottom: 2px;
+  }
+  #pw-timeout-warn .warn-sub {
+    font-size: 12px; color: rgba(255,255,255,0.65);
+  }
+  #pw-timeout-warn .warn-btn {
+    background: #f59e0b; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font-size: 12px; font-weight: 800; cursor: pointer;
+    flex-shrink: 0; transition: opacity 0.2s;
+  }
+  #pw-timeout-warn .warn-btn:hover { opacity: 0.85; }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
 </style>
 <script>
   (function() {
-    var KEY = 'playmate_auth';
+    var KEY  = 'playmate_auth';
+    var TSKEY = 'playmate_last_active';
     var PASS = '\x24\x61\x6c\x65\x73\x66\x6f\x72\x63\x65\x23\x32\x30\x32\x36';
-    function check() {
-      if (sessionStorage.getItem(KEY) === '1') {
-        document.addEventListener('DOMContentLoaded', function() {
-          var g = document.getElementById('pw-gate');
-          if (g) g.classList.add('hidden');
-        });
+    var TIMEOUT = 10 * 60 * 1000; // 10 minutes in ms
+    var WARN_BEFORE = 60 * 1000;  // warn 1 minute before timeout
+    var idleTimer = null;
+    var warnTimer = null;
+
+    function isAuthed() {
+      if (sessionStorage.getItem(KEY) !== '1') return false;
+      var last = parseInt(sessionStorage.getItem(TSKEY) || '0', 10);
+      if (Date.now() - last > TIMEOUT) {
+        lock('Session timed out due to inactivity.');
+        return false;
+      }
+      return true;
+    }
+
+    function stampActivity() {
+      sessionStorage.setItem(TSKEY, String(Date.now()));
+    }
+
+    function lock(msg) {
+      sessionStorage.removeItem(KEY);
+      sessionStorage.removeItem(TSKEY);
+      clearTimeout(idleTimer);
+      clearTimeout(warnTimer);
+      hideWarning();
+      var g = document.getElementById('pw-gate');
+      if (g) {
+        g.classList.remove('hidden');
+        var err = document.getElementById('pw-error');
+        if (err && msg) { err.style.color = '#f59e0b'; err.textContent = msg; }
+        var inp = document.getElementById('pw-input');
+        if (inp) { inp.value = ''; setTimeout(function(){ inp.focus(); }, 50); }
       }
     }
-    check();
+
+    function hideWarning() {
+      var w = document.getElementById('pw-timeout-warn');
+      if (w) w.classList.add('hidden');
+    }
+
+    function showWarning(secsLeft) {
+      var w = document.getElementById('pw-timeout-warn');
+      if (!w) return;
+      var s = document.getElementById('pw-warn-secs');
+      if (s) s.textContent = secsLeft;
+      w.classList.remove('hidden');
+      // countdown tick
+      var tick = setInterval(function() {
+        secsLeft--;
+        if (s) s.textContent = secsLeft;
+        if (secsLeft <= 0) clearInterval(tick);
+      }, 1000);
+      // store tick ref so we can clear it on activity
+      w._tick = tick;
+    }
+
+    function resetIdleTimer() {
+      if (sessionStorage.getItem(KEY) !== '1') return;
+      stampActivity();
+      clearTimeout(idleTimer);
+      clearTimeout(warnTimer);
+      // hide warning if visible
+      var w = document.getElementById('pw-timeout-warn');
+      if (w && !w.classList.contains('hidden')) {
+        if (w._tick) clearInterval(w._tick);
+        hideWarning();
+      }
+      // warn 1 min before timeout
+      warnTimer = setTimeout(function() {
+        showWarning(60);
+      }, TIMEOUT - WARN_BEFORE);
+      // lock at timeout
+      idleTimer = setTimeout(function() {
+        lock('Session timed out due to inactivity.');
+      }, TIMEOUT);
+    }
+
+    // Attach activity listeners after DOM ready
+    document.addEventListener('DOMContentLoaded', function() {
+      ['mousemove','mousedown','keydown','scroll','touchstart','click'].forEach(function(evt) {
+        document.addEventListener(evt, function() {
+          if (sessionStorage.getItem(KEY) === '1') resetIdleTimer();
+        }, { passive: true });
+      });
+
+      // Check auth state on load
+      if (isAuthed()) {
+        var g = document.getElementById('pw-gate');
+        if (g) g.classList.add('hidden');
+        resetIdleTimer();
+      }
+    });
+
+    window.resetIdleTimer = resetIdleTimer;
     window._pwSubmit = function() {
       var val = document.getElementById('pw-input').value;
       if (val === PASS) {
         sessionStorage.setItem(KEY, '1');
+        stampActivity();
+        var err = document.getElementById('pw-error');
+        if (err) { err.style.color = '#ef4444'; err.textContent = ''; }
         document.getElementById('pw-gate').classList.add('hidden');
+        resetIdleTimer();
       } else {
         var inp = document.getElementById('pw-input');
         var err = document.getElementById('pw-error');
         inp.classList.remove('shake');
         void inp.offsetWidth;
         inp.classList.add('shake');
+        err.style.color = '#ef4444';
         err.textContent = 'Incorrect password. Please try again.';
         inp.value = '';
         inp.focus();
@@ -678,6 +801,16 @@
 </style>
 </head>
 <body>
+
+<!-- TIMEOUT WARNING TOAST -->
+<div id="pw-timeout-warn" class="hidden">
+  <div class="warn-icon">⏳</div>
+  <div class="warn-text">
+    <div class="warn-title">Session expiring in <span id="pw-warn-secs">60</span>s</div>
+    <div class="warn-sub">Move your mouse or click anywhere to stay logged in.</div>
+  </div>
+  <button class="warn-btn" onclick="resetIdleTimer ? resetIdleTimer() : null; document.getElementById('pw-timeout-warn').classList.add('hidden');">Stay Logged In</button>
+</div>
 
 <!-- PASSWORD GATE -->
 <div id="pw-gate">
